@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>JSON Viewer – local & sans pubs</title>
+  <style>
+    :root { --bg:#0b0d10; --panel:#11151a; --muted:#7a8699; --text:#e6edf3; --accent:#4c9aff; --ok:#2ecc71; --err:#ff6b6b; --border:#20262d; --shadow:0 4px 24px rgba(0,0,0,.35); }
+    *{box-sizing:border-box} html,body{height:100%}
+    body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Helvetica Neue,Arial}
+    .app{display:grid;grid-template-rows:auto auto 1fr;gap:12px;padding:16px;max-width:1200px;margin:0 auto}
+    header{display:flex;align-items:center;gap:12px;justify-content:space-between}
+    h1{font-size:18px;margin:0}.badge{font-size:11px;color:var(--muted)}
+    .toolbar{display:grid;grid-template-columns:1fr;gap:12px}
+    .panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow)}
+    .inputs{padding:12px;display:grid;gap:8px}
+    .controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+    .btn{cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--text);padding:8px 12px;border-radius:10px;transition:.15s;font-weight:600}
+    .btn:hover{border-color:var(--accent)}
+    .btn.primary{background:var(--accent);color:#fff}
+    .file{display:inline-flex;align-items:center;gap:8px}.file input{display:none}
+    .text{width:100%;min-height:120px;max-height:40vh;resize:vertical;border-radius:10px;padding:10px 12px;font-family:ui-monospace,monospace;background:#0f1318;color:#e2e8f0;border:1px solid var(--border)}
+    .stats{display:flex;gap:12px;color:var(--muted);font-size:12px}
+    .viewer{padding:0;overflow:hidden;display:grid;grid-template-rows:auto 1fr}
+    .viewerhead{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid var(--border);gap:8px}
+    .viewer-actions{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .treewrap{overflow:auto;padding:8px 12px 16px;max-height:70vh}
+    .node{position:relative;padding-left:18px}
+    .node .toggle{position:absolute;left:0;top:2px;cursor:pointer;user-select:none;width:14px;text-align:center;color:var(--muted)}
+    .node .key{color:#7aa2f7}.node .string{color:#a6e3a1}.node .number{color:#caa9ff}.node .boolean{color:#ffad66}.node .null{color:#94a3b8;font-style:italic}.node .typehint{color:var(--muted);font-style:italic;margin-left:6px}
+    .children{margin-left:0;border-left:1px dashed var(--border);padding-left:10px;margin-top:6px}
+    .error{color:var(--err);font-weight:600}.ok{color:var(--ok)}
+    .hidden{display:none!important} body.viewer-full .inputs{display:none!important} body.viewer-full .toolbar{grid-template-columns:1fr}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div><h1>JSON Viewer <span class="badge">— local, sans pubs</span></h1></div>
+    </header>
+
+    <section class="toolbar panel">
+      <div class="inputs">
+        <div class="controls">
+          <label class="file">
+            <input id="file" type="file" accept="application/json,.json,.har,.txt" />
+            <button class="btn">📂 Ouvrir un fichier JSON</button>
+          </label>
+          <button id="pasteSample" class="btn">Exemple</button>
+          <button id="parse" class="btn primary">Analyser</button>
+          <button id="copy" class="btn" title="Copier le JSON formaté">Copier</button>
+          <button id="download" class="btn" title="Télécharger le JSON formaté">Télécharger</button>
+        </div>
+        <textarea id="input" class="text" placeholder="Collez ici du JSON brut ou chargez un fichier…"></textarea>
+        <div class="stats" id="stats">—</div>
+      </div>
+      <div class="viewer panel">
+        <div class="viewerhead">
+          <strong>Résultat</strong>
+          <div class="viewer-actions">
+            <a href="#" id="collapseAll" class="btn">Tout replier</a>
+            <a href="#" id="expandAll" class="btn">Tout déplier</a>
+            <button id="resetView" class="btn">Revenir en mode édition</button>
+            <span id="status" class="ok">En attente…</span>
+          </div>
+        </div>
+        <div id="tree" class="treewrap" role="tree" aria-label="Arbre JSON"></div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const $ = (s, root=document) => root.querySelector(s);
+    const $$ = (s, root=document) => Array.from(root.querySelectorAll(s));
+
+    const inputEl = $('#input');
+    const fileEl = $('#file');
+    const treeEl = $('#tree');
+    const statusEl = $('#status');
+    const statsEl = $('#stats');
+    const collapseAllBtn = $('#collapseAll');
+    const expandAllBtn = $('#expandAll');
+    const resetViewBtn = $('#resetView');
+
+    fileEl.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0]; if (!file) return;
+      const text = await file.text();
+      inputEl.value = text;
+      status(`Fichier chargé : ${file.name}`, 'ok');
+      computeStats(text);
+    });
+
+    $('#pasteSample').addEventListener('click', () => {
+      const sample = { name: 'Jnapps', version: 1, active: true, tags: ['json','viewer','local'], meta: { createdAt: new Date().toISOString(), note: null } };
+      const txt = JSON.stringify(sample, null, 2);
+      inputEl.value = txt; computeStats(txt); parseAndRender();
+    });
+
+    $('#parse').addEventListener('click', () => {
+      parseAndRender();
+      document.body.classList.add('viewer-full'); // auto plein écran
+    });
+
+    resetViewBtn.addEventListener('click', () => {
+      document.body.classList.remove('viewer-full');
+      status('Retour en mode édition','ok');
+    });
+
+    collapseAllBtn.addEventListener('click', (e)=>{ e.preventDefault(); setAllExpanded(false); status('Tout replié','ok'); });
+    expandAllBtn.addEventListener('click', (e)=>{ e.preventDefault(); setAllExpanded(true); status('Tout déplié','ok'); });
+
+    function parseAndRender(){
+      let json; try { json = JSON.parse(inputEl.value.trim()); } catch(e){ return status('JSON invalide','error'); }
+      renderTree(json);
+      const pretty = JSON.stringify(json,null,2);
+      computeStats(pretty);
+      status('Analyse OK ✔','ok');
+    }
+
+    function computeStats(str){ try{ const bytes=new Blob([str]).size; const kb=(bytes/1024).toFixed(2); let keys=0; traverse(JSON.parse(str),()=>keys++); statsEl.textContent=`Taille : ${kb} KB · Clés approx : ${keys}`;}catch{statsEl.textContent='—';} }
+
+    function traverse(val,onKey){ if(Array.isArray(val)){val.forEach(v=>traverse(v,onKey));return;} if(val&&typeof val==='object'){for(const k in val){onKey(k);traverse(val[k],onKey);} } }
+
+    function status(t,kind='ok'){statusEl.textContent=t;statusEl.className=kind==='error'?'error':'ok';}
+
+    function renderTree(data){ treeEl.innerHTML=''; const root=document.createElement('div'); root.className='node'; root.appendChild(buildNode(undefined,data)); treeEl.appendChild(root); }
+
+    function buildNode(key,value){ const container=document.createElement('div'); container.className='node'; const line=document.createElement('div'); const hasChildren=value&&typeof value==='object'; if(hasChildren){ const t=document.createElement('span'); t.className='toggle'; t.textContent='▸'; t.addEventListener('click',()=>toggle()); line.appendChild(t); }
+      if(key!==undefined){ const k=document.createElement('span'); k.className='key'; k.textContent=JSON.stringify(String(key))+': '; k.addEventListener('dblclick',()=>setExpanded(container,!container.dataset.expanded)); line.appendChild(k); }
+      if(!hasChildren){ line.appendChild(renderPrimitive(value)); container.appendChild(line); return container; }
+      const hint=document.createElement('span'); hint.className='typehint'; hint.textContent=Array.isArray(value)?`Array(${value.length})`:'Object'; const summary=document.createElement('span'); summary.appendChild(hint); line.appendChild(summary); container.appendChild(line);
+      const childrenWrap=document.createElement('div'); childrenWrap.className='children';
+      const entries=Array.isArray(value)?value.map((v,i)=>[i,v]):Object.entries(value);
+      for(const [k,v] of entries){ childrenWrap.appendChild(buildNode(k,v)); }
+      container.appendChild(childrenWrap);
+      const defaultOpen=Array.isArray(value)?value.length<=30:Object.keys(value).length<=15; setExpanded(container,defaultOpen);
+      function toggle(){ setExpanded(container,!container.dataset.expanded); }
+      return container; }
+
+    function renderPrimitive(v){ const s=document.createElement('span'); const t=typeof v; if(v===null){s.className='null';s.textContent='null';return s;} if(t==='string'){s.className='string';s.textContent=JSON.stringify(v);return s;} if(t==='number'){s.className='number';s.textContent=String(v);return s;} if(t==='boolean'){s.className='boolean';s.textContent=v?'true':'false';return s;} s.textContent=JSON.stringify(v); return s; }
+
+    function setExpanded(node,expanded){ const toggleEl=node.querySelector(':scope > div .toggle'); const children=node.querySelector(':scope > .children'); const isExp=expanded===true||expanded==='true'; node.dataset.expanded=isExp?'true':''; if(toggleEl)toggleEl.textContent=isExp?'▾':'▸'; if(children)children.style.display=isExp?'block':'none'; }
+    function setAllExpanded(expanded){ $$('.node').forEach(n=>setExpanded(n,expanded)); }
+  </script>
+</body>
+</html>
